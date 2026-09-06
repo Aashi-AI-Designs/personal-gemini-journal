@@ -1,0 +1,22 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // /journal-app/boards/{uid}/{boardId}/{fileName}
+    match /journal-app/boards/{uid}/{boardId}/{fileName} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+
+      allow write: if request.auth != null
+                   && request.auth.uid == uid
+                   // real content-type check, not just filename extension
+                   && request.resource.contentType.matches('image/.*')
+                   // hard cap per file — abuse prevention, principle #6
+                   && request.resource.size < 8 * 1024 * 1024; // 8MB
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
