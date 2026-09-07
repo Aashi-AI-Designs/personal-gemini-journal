@@ -1,87 +1,110 @@
 # Personal Gemini Journal
 
-A prototype built against the security constitution in `docs/ai-studio-constitution.md`.
-Read that file first — paste it into Google AI Studio's Custom Instructions
-before generating or modifying any code, per Phase 1 of the challenge.
+A private journaling app where you write, brainstorm with Gemini, and build a searchable record of your own thinking over time — built security-first, from the architecture up.
 
-## What's here
+**Live demo:** https://gen-ai-apps-with-gemini.web.app/
 
-- `docs/ai-studio-constitution.md` — Phase 1 deliverable, the security constitution
-- `firestore.rules`, `storage.rules` — isolation enforcement (defense in depth)
-- `functions/` — Cloud Functions backend (Express + Firebase Admin SDK)
-- `web/` — React + Vite frontend
+---
 
-## One-time setup
+## Why this exists
 
-1. **Create a Firebase project** at console.firebase.google.com. Enable:
-   - Authentication → Google provider, and Email/Password provider
-   - Firestore (production mode — the rules file handles access control)
-   - Storage
-2. **Upgrade to the Blaze plan.** This is required for Cloud Functions to
-   make outbound calls (to Gemini and Secret Manager) — the free Spark
-   plan can't do this. See "Cost safety" below before doing this step;
-   set up the budget hard-stop first, not after.
-3. **Get a free-tier Gemini API key** from Google AI Studio
-   (aistudio.google.com/apikey) — do NOT link it to a billing account,
-   that's what keeps it structurally free (see prior discussion: no card
-   attached to the key means no path to a charge).
-4. **Store the key in Secret Manager:**
-   ```
-   gcloud secrets create personal-journal-gemini-key --replication-policy="automatic"
-   echo -n "YOUR_KEY_HERE" | gcloud secrets versions add personal-journal-gemini-key --data-file=-
-   gcloud secrets add-iam-policy-binding personal-journal-gemini-key \
-     --member="serviceAccount:YOUR_PROJECT_ID@appspot.gserviceaccount.com" \
-     --role="roles/secretmanager.secretAccessor"
-   ```
-5. **Invite-only allowlist** (optional, recommended while testing):
-   ```
-   firebase firestore:set allowlist/tester@example.com '{"invited": true}'
-   ```
-6. **Frontend env vars** — copy `web/.env.example` to `web/.env` and fill
-   in your Firebase project's client config (from Project Settings →
-   General → Your apps).
+Most AI-generated apps look great in a demo and fall apart in production — hardcoded keys, no auth boundaries, shared databases with zero isolation. This project started from the opposite direction: a security "constitution" ([`docs/ai-studio-constitution.md`](docs/ai-studio-constitution.md)) was written and configured *before* any feature code existed, covering identity verification, data isolation, secret management, and LLM-specific defenses. Every feature below was built to comply with that foundation, not bolted on around it.
 
-## Cost safety — do this BEFORE enabling Blaze
+## Features
 
-1. GCP Console → Billing → Budgets & alerts → create a budget at a low
-   threshold (e.g. $1, $5).
-2. Set the budget's action to trigger a Pub/Sub notification, and attach
-   a small Cloud Function (not included in this scaffold — a few lines)
-   that disables billing on the project when the threshold fires. A
-   budget alert alone only notifies you; it does not stop spending.
-3. In `functions/src/index.ts`, `maxInstances: 10` on the `journalApi`
-   function is already set as a hard technical ceiling on Cloud
-   Functions scale-out — a bug can't cause unbounded parallel invocations.
-4. The Gemini key stays on the free tier with no billing account attached
-   — this is the one piece that's zero-risk by construction, not by
-   monitoring. If usage exceeds the daily quota, calls simply fail with
-   a 429 until the next day's reset; nothing bills.
+**Core**
+- 🔑 Firebase Authentication (Google + email/password), invite-only via an Auth blocking function
+- 💬 Multi-turn journaling and brainstorming conversations with Gemini
+- 🗂️ Per-user data isolation in Cloud Firestore — enforced in code, not just security rules
+- 🔒 Gemini API key retrieved from Google Cloud Secret Manager at runtime — never hardcoded, never sent to the client
 
-## Local development
+**Contextual Gemini** (the headline custom feature)
+While you write, a cost-conscious, multi-stage funnel — a free local content filter, then one cheap classification call, then only-if-needed a real search — checks whether your current entry connects to something you wrote before. If it finds a match, it surfaces the connection. If not, it falls back to a short, clearly-labeled, ungrounded conversation-starter instead of staying silent. Either way, **nothing is ever shown or saved without you choosing to act on it.**
+
+**Idea boards**
+Manual or Gemini-assisted moodboards for anything you're working on — planning an event, drafting a book, brainstorming. Add ideas and images by hand, or brainstorm with Gemini directly on a board and click to add its suggestions in. Same rule as journaling: Gemini proposes, you confirm.
+
+**Past entries**
+Browse your journal by day, month, or year.
+
+## Architecture
 
 ```
+┌─────────────┐      ┌──────────────────────┐      ┌─────────────────┐
+│   React +   │─────▶│   Cloud Run (via      │─────▶│  Gemini API      │
+│   Vite      │      │   2nd-gen Functions)  │      │  (key from       │
+│   frontend  │◀─────│                       │◀─────│  Secret Manager) │
+└─────────────┘      └──────────┬────────────┘      └─────────────────┘
+       │                        │
+       │                        ▼
+       │              ┌──────────────────┐
+       └─────────────▶│  Cloud Firestore  │
+     (Firebase Auth)  │  (named database, │
+                       │  uid-scoped)      │
+                       └──────────────────┘
+```
+
+Every request from the frontend carries a Firebase ID token. The backend verifies it server-side and derives the user's identity *only* from that token — never from anything the client claims in a request body. All Firestore access is scoped to `/users/{uid}/...`, and the app uses its own dedicated named Firestore database so it can safely share a GCP project (and its free-tier credits) with other, unrelated apps without any risk of data collision.
+
+## Tech stack
+
+- **Frontend:** React, TypeScript, Vite
+- **Backend:** Node.js, Express, TypeScript, running on Cloud Run via Firebase Cloud Functions (2nd gen)
+- **Auth:** Firebase Authentication
+- **Database:** Cloud Firestore (named database, `uid`-scoped isolation)
+- **Storage:** Firebase Cloud Storage (board images)
+- **AI:** Gemini API (`gemini-3.6-flash` for conversation/summarization, `gemini-3.5-flash-lite` for cheap relevance classification)
+- **Secrets:** Google Cloud Secret Manager
+
+## Security highlights
+
+- Identity is derived exclusively from a verified Firebase ID token — never trusted from client input
+- Firestore Security Rules provide a second, independent isolation layer, since the Admin SDK bypasses rules entirely
+- The Gemini system prompt explicitly treats user content as data, never as instructions — a direct defense against prompt-injection attempts embedded in journal text
+- Rate limiting and input-size caps guard every AI-calling endpoint against quota exhaustion or cost abuse
+- The Gemini API key runs on the free tier with no billing account attached — quota exhaustion fails gracefully, it never bills
+
+## Setup and deployment
+
+Quick start:
+```bash
+git clone <this-repo>
+cd personal-gemini-journal
+
+# Backend
 cd functions && npm install && npm run build
+
+# Frontend
+cd ../web && npm install
+cp .env.example .env   # fill in your Firebase web app config
+
+# Local emulator test
+cd ..
 firebase emulators:start --only functions,firestore,auth,storage
-
-cd web && npm install && npm run dev
 ```
 
-## Deploy
+## Project structure
 
 ```
-firebase deploy --only firestore:rules,storage:rules,functions,hosting
+personal-gemini-journal/
+├── docs/
+│   └── ai-studio-constitution.md   # the Phase 1 security constitution
+├── firestore.rules
+├── storage.rules
+├── functions/                      # Cloud Functions backend (TypeScript/Express)
+│   └── src/
+│       ├── index.ts
+│       ├── auth-triggers.ts        # invite-only allowlist blocking function
+│       ├── middleware/
+│       ├── routes/
+│       └── services/
+└── web/                            # React + Vite frontend
+    └── src/
+        ├── pages/
+        ├── components/
+        └── lib/
 ```
 
-## Known scaffold gaps to close before a real demo
+## License
 
-- `check-connection`'s past-entry matching in `entries.ts` is a
-  placeholder string match — swap for a real embeddings comparison
-  (`text-embedding-004` via Vertex AI or the Gemini API, storing a vector
-  per entry and comparing cosine similarity) before relying on it.
-- The board-images-in-Gemini flow (having Gemini actually look at an
-  uploaded image, not just store it) isn't wired up yet — `sendChatMessage`
-  in `services/gemini.ts` would need to accept an image part alongside text.
-- No automated tests yet — given the isolation guarantees are the most
-  safety-critical part of this app, a security-rules test suite
-  (`@firebase/rules-unit-testing`) verifying cross-user access is denied
-  would be the highest-value first test to add.
+MIT (or update to whatever you'd prefer for the submission).
