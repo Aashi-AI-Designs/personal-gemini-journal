@@ -66,8 +66,6 @@ Every request from the frontend carries a Firebase ID token. The backend verifie
 
 ## Setup and deployment
 
-Full step-by-step instructions — including Google Cloud Shell setup, Secret Manager configuration, and cost-safety guardrails — are in [`docs/deployment-guide.md`](docs/deployment-guide.md).
-
 Quick start:
 ```bash
 git clone <this-repo>
@@ -90,8 +88,7 @@ firebase emulators:start --only functions,firestore,auth,storage
 ```
 personal-gemini-journal/
 ├── docs/
-│   ├── ai-studio-constitution.md   # the Phase 1 security constitution
-│   └── deployment-guide.md         # full setup walkthrough
+│   └── ai-studio-constitution.md   # the Phase 1 security constitution
 ├── firestore.rules
 ├── storage.rules
 ├── functions/                      # Cloud Functions backend (TypeScript/Express)
