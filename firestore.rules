@@ -1,0 +1,58 @@
+rules_version = '2';
+
+// Defense-in-depth layer. Backend Cloud Functions use the Admin SDK and
+// bypass these rules entirely (see constitution principle #2) — the real
+// isolation guarantee is the server deriving uid from the verified ID
+// token on every request. These rules exist for:
+//   1. any future direct client -> Firestore reads (e.g. a live listener
+//      on the user's own entries for real-time UI updates)
+//   2. a second, independent line of defense if backend code ever has a bug
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    match /users/{uid} {
+      allow read, write: if isOwner(uid);
+
+      match /entries/{entryId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      match /gemini_engagements/{engagementId} {
+        allow read, write: if isOwner(uid);
+      }
+
+      match /boards/{boardId} {
+        allow read, write: if isOwner(uid);
+
+        match /items/{itemId} {
+          allow read, write: if isOwner(uid);
+        }
+
+        match /todos/{todoId} {
+          allow read, write: if isOwner(uid);
+        }
+      }
+    }
+
+    // Invite-only signup allowlist. Readable only by the signed-in user
+    // checking their own email is present; never listable, never writable
+    // by clients (managed by the project owner via console/CLI only).
+    match /allowlist/{email} {
+      allow read: if isSignedIn() && request.auth.token.email == email;
+      allow write: if false;
+    }
+
+    // Deny everything else by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
